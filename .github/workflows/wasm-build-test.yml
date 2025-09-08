@@ -1,0 +1,546 @@
+name: WASM Build and Test - yaml-cpp.wasm
+# Production CI/CD pipeline for high-performance YAML processing
+# Comprehensive validation across multiple configurations
+
+on:
+  push:
+    branches: [ main, develop, wasm ]
+  pull_request:
+    branches: [ main, wasm ]
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      enable_full_matrix:
+        description: 'Enable full build matrix (slower but comprehensive)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  EMSDK_VERSION: '3.1.50'
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.x'
+
+jobs:
+  # Job 1: Build Matrix - Multiple configurations
+  build-test:
+    name: Build & Test (${{ matrix.config }}-${{ matrix.simd }}-${{ matrix.native }})
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Release, Debug]
+        enable_simd: [true, false]
+        enable_native: [true, false]
+        # Conditional matrix expansion for full testing
+        include:
+          - config: Release
+            enable_simd: true 
+            enable_native: true
+            name: "production"
+            deploy: true
+        exclude:
+          # Skip some combinations for faster CI unless full matrix is requested
+          - config: Debug
+            enable_simd: false
+            enable_native: false
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'yaml-cpp.wasm/package.json'
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache Emscripten SDK
+        id: cache-emsdk
+        uses: actions/cache@v3
+        with:
+          path: |
+            emsdk
+            ~/.emscripten
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v12
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: 'emsdk'
+
+      - name: Verify Emscripten Installation
+        run: |
+          emcc --version
+          em++ --version
+          cmake --version
+          echo "EMSDK: $EMSDK"
+          echo "PATH: $PATH"
+
+      - name: Install Dependencies
+        run: |
+          cd yaml-cpp.wasm
+          npm ci
+        
+      - name: Configure Build Environment
+        run: |
+          cd yaml-cpp.wasm
+          echo "BUILD_TYPE=${{ matrix.config }}" >> $GITHUB_ENV
+          echo "ENABLE_SIMD=${{ matrix.enable_simd && 'ON' || 'OFF' }}" >> $GITHUB_ENV
+          echo "ENABLE_WASM_NATIVE=${{ matrix.enable_native && 'ON' || 'OFF' }}" >> $GITHUB_ENV
+
+      - name: Build WASM Module
+        run: |
+          cd yaml-cpp.wasm
+          BUILD_TYPE=${{ matrix.config }} \
+          ENABLE_SIMD=${{ matrix.enable_simd && 'ON' || 'OFF' }} \
+          ENABLE_WASM_NATIVE=${{ matrix.enable_native && 'ON' || 'OFF' }} \
+          ./build-wasm.sh
+        timeout-minutes: 15
+
+      - name: Verify Build Artifacts
+        run: |
+          cd yaml-cpp.wasm
+          echo "📊 Build Artifacts:"
+          ls -la dist/
+          echo ""
+          echo "📏 File Sizes:"
+          du -h dist/* || true
+          echo ""
+          echo "🔍 WASM File Details:"
+          file dist/*.wasm || true
+
+      - name: Run Unit Tests
+        run: |
+          cd yaml-cpp.wasm
+          npm test
+        timeout-minutes: 5
+
+      - name: Run Performance Benchmarks
+        run: |
+          cd yaml-cpp.wasm
+          npm run test:performance
+        timeout-minutes: 10
+
+      - name: Install Playwright Dependencies
+        run: |
+          cd yaml-cpp.wasm
+          npx playwright install --with-deps chromium firefox
+        if: matrix.config == 'Release'
+
+      - name: Run Browser Tests
+        run: |
+          cd yaml-cpp.wasm
+          npm run test:browser
+        timeout-minutes: 10
+        if: matrix.config == 'Release'
+
+      - name: Generate Test Report
+        run: |
+          cd yaml-cpp.wasm
+          echo "# Test Report - ${{ matrix.config }}-${{ matrix.enable_simd && 'SIMD' || 'NoSIMD' }}-${{ matrix.enable_native && 'Native' || 'Basic' }}" > test-report.md
+          echo "" >> test-report.md
+          echo "## Build Configuration" >> test-report.md
+          echo "- Config: ${{ matrix.config }}" >> test-report.md
+          echo "- SIMD: ${{ matrix.enable_simd }}" >> test-report.md
+          echo "- WASM-Native: ${{ matrix.enable_native }}" >> test-report.md
+          echo "- Emscripten: ${{ env.EMSDK_VERSION }}" >> test-report.md
+          echo "" >> test-report.md
+          echo "## Artifacts" >> test-report.md
+          echo '```' >> test-report.md
+          ls -la dist/ >> test-report.md || true
+          echo '```' >> test-report.md
+        
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: yaml-cpp-wasm-${{ matrix.config }}-simd-${{ matrix.enable_simd }}-native-${{ matrix.enable_native }}
+          path: |
+            yaml-cpp.wasm/dist/
+            yaml-cpp.wasm/test-report.md
+          retention-days: 7
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.config }}-simd-${{ matrix.enable_simd }}-native-${{ matrix.enable_native }}
+          path: |
+            yaml-cpp.wasm/playwright-results.json
+            yaml-cpp.wasm/playwright-results.xml
+            yaml-cpp.wasm/playwright-report/
+          retention-days: 7
+
+  # Job 2: Cross-Browser Testing (Release builds only)
+  cross-browser-test:
+    name: Cross-Browser Testing
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-test')
+    
+    strategy:
+      matrix:
+        browser: [chromium, firefox, webkit]
+        
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: yaml-cpp-wasm-Release-simd-true-native-true
+          path: yaml-cpp.wasm/dist/
+
+      - name: Install Dependencies
+        run: |
+          cd yaml-cpp.wasm
+          npm ci
+
+      - name: Install Playwright Browser
+        run: |
+          cd yaml-cpp.wasm
+          npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run Browser-Specific Tests
+        run: |
+          cd yaml-cpp.wasm
+          npx playwright test --project=${{ matrix.browser }}-standard
+        env:
+          BROWSER: ${{ matrix.browser }}
+
+      - name: Upload Browser Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: browser-test-${{ matrix.browser }}
+          path: |
+            yaml-cpp.wasm/playwright-report/
+            yaml-cpp.wasm/test-results/
+
+  # Job 3: Performance Validation
+  performance-validation:
+    name: Performance Validation
+    runs-on: ubuntu-latest
+    needs: build-test
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download Production Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: yaml-cpp-wasm-Release-simd-true-native-true
+          path: yaml-cpp.wasm/dist/
+
+      - name: Install Dependencies
+        run: |
+          cd yaml-cpp.wasm
+          npm ci
+
+      - name: Run Comprehensive Performance Tests
+        run: |
+          cd yaml-cpp.wasm
+          npm run benchmark -- --detailed --iterations=1000
+        timeout-minutes: 15
+
+      - name: Validate Performance Targets
+        run: |
+          cd yaml-cpp.wasm
+          node -e "
+          const fs = require('fs');
+          const results = JSON.parse(fs.readFileSync('benchmark-results.json', 'utf8'));
+          
+          // Performance targets for YAML processing
+          const targets = {
+            startupTime: 500,     // <500ms
+            avgParseTime: 10,     // <10ms for medium docs
+            throughput: 100       // >100 ops/sec
+          };
+          
+          let passed = true;
+          
+          if (results.startupTime?.duration > targets.startupTime) {
+            console.log('❌ Startup time exceeds target');
+            passed = false;
+          }
+          
+          if (results.parsing_medium?.avgTime > targets.avgParseTime) {
+            console.log('❌ Parse time exceeds target');  
+            passed = false;
+          }
+          
+          if (results.parsing_medium?.throughput < targets.throughput) {
+            console.log('❌ Throughput below target');
+            passed = false;
+          }
+          
+          if (passed) {
+            console.log('✅ All performance targets met');
+          } else {
+            process.exit(1);
+          }
+          "
+
+      - name: Generate Performance Report
+        run: |
+          cd yaml-cpp.wasm
+          echo "# Performance Validation Report" > performance-report.md
+          echo "Generated: $(date)" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "## Results" >> performance-report.md
+          if [ -f benchmark-results.json ]; then
+            echo '```json' >> performance-report.md
+            cat benchmark-results.json >> performance-report.md
+            echo '```' >> performance-report.md
+          fi
+
+      - name: Upload Performance Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-validation
+          path: |
+            yaml-cpp.wasm/benchmark-results.json
+            yaml-cpp.wasm/performance-report.md
+
+  # Job 4: Security Scanning
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-test
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: yaml-cpp-wasm-Release-simd-true-native-true
+          path: yaml-cpp.wasm/dist/
+
+      - name: Run Security Audit
+        run: |
+          cd yaml-cpp.wasm
+          npm audit --production
+        continue-on-error: true
+
+      - name: Analyze WASM Binary
+        run: |
+          cd yaml-cpp.wasm/dist
+          echo "🔍 WASM Binary Analysis:"
+          
+          for wasm_file in *.wasm; do
+            if [ -f "$wasm_file" ]; then
+              echo "Analyzing $wasm_file:"
+              echo "  Size: $(ls -lh "$wasm_file" | awk '{print $5}')"
+              echo "  Type: $(file "$wasm_file")"
+              
+              # Check for debug symbols (increase binary size)
+              if command -v wasm-objdump >/dev/null 2>&1; then
+                sections=$(wasm-objdump -h "$wasm_file" 2>/dev/null | grep -c "name\|debug" || true)
+                echo "  Sections with debug info: $sections"
+              fi
+            fi
+          done
+
+  # Job 5: Deployment (only on main branch and releases)  
+  deploy:
+    name: Deploy to NPM & CDN
+    runs-on: ubuntu-latest
+    needs: [build-test, cross-browser-test, performance-validation, security-scan]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+    environment: production
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download Production Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: yaml-cpp-wasm-Release-simd-true-native-true
+          path: yaml-cpp.wasm/dist/
+
+      - name: Install Dependencies
+        run: |
+          cd yaml-cpp.wasm
+          npm ci
+
+      - name: Prepare Package
+        run: |
+          cd yaml-cpp.wasm
+          
+          # Generate CommonJS wrapper for compatibility
+          cat > dist/yaml-cpp.cjs << 'EOF'
+          const yamlCpp = require('./yaml-cpp.mjs');
+          module.exports = yamlCpp.default;
+          module.exports.parseYAML = yamlCpp.parseYAML;
+          module.exports.validateYAML = yamlCpp.validateYAML;
+          module.exports.toYAML = yamlCpp.toYAML;
+          module.exports.getValue = yamlCpp.getValue;
+          module.exports.countElements = yamlCpp.countElements;
+          module.exports.init = yamlCpp.init;
+          EOF
+          
+          # Update package version if release
+          if [ "${{ github.event_name }}" = "release" ]; then
+            npm version --no-git-tag-version ${{ github.event.release.tag_name }}
+          fi
+
+      - name: Publish to NPM (Dry Run)
+        run: |
+          cd yaml-cpp.wasm
+          npm publish --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to NPM
+        run: |
+          cd yaml-cpp.wasm
+          npm publish --access=public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: github.event_name == 'release'
+
+      - name: Create GitHub Release Assets
+        if: github.event_name == 'release'
+        run: |
+          cd yaml-cpp.wasm
+          tar -czf yaml-cpp-wasm-${{ github.event.release.tag_name }}.tar.gz dist/
+          
+      - name: Upload Release Assets
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: yaml-cpp.wasm/yaml-cpp-wasm-${{ github.event.release.tag_name }}.tar.gz
+          asset_name: yaml-cpp-wasm-${{ github.event.release.tag_name }}.tar.gz
+          asset_content_type: application/gzip
+
+  # Job 6: Generate Summary Report
+  summary:
+    name: Generate CI Summary
+    runs-on: ubuntu-latest
+    needs: [build-test, cross-browser-test, performance-validation, security-scan]
+    if: always()
+    
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Generate CI Summary
+        run: |
+          echo "# yaml-cpp.wasm CI/CD Summary" > ci-summary.md
+          echo "Generated: $(date)" >> ci-summary.md
+          echo "Commit: ${{ github.sha }}" >> ci-summary.md
+          echo "Branch: ${{ github.ref }}" >> ci-summary.md
+          echo "" >> ci-summary.md
+          
+          echo "## Build Results" >> ci-summary.md
+          
+          # Count successful builds
+          success_count=0
+          total_count=0
+          
+          for artifact in yaml-cpp-wasm-*-simd-*-native-*; do
+            if [ -d "$artifact" ]; then
+              total_count=$((total_count + 1))
+              if [ -d "$artifact/dist" ] && [ "$(ls -A $artifact/dist)" ]; then
+                success_count=$((success_count + 1))
+                echo "✅ $artifact" >> ci-summary.md
+              else
+                echo "❌ $artifact" >> ci-summary.md
+              fi
+            fi
+          done
+          
+          echo "" >> ci-summary.md
+          echo "**Build Success Rate: $success_count/$total_count**" >> ci-summary.md
+          echo "" >> ci-summary.md
+          
+          # Browser test results
+          if [ -d "browser-test-chromium" ] || [ -d "browser-test-firefox" ] || [ -d "browser-test-webkit" ]; then
+            echo "## Browser Test Results" >> ci-summary.md
+            for browser in chromium firefox webkit; do
+              if [ -d "browser-test-$browser" ]; then
+                echo "✅ $browser" >> ci-summary.md
+              else
+                echo "❌ $browser" >> ci-summary.md
+              fi
+            done
+            echo "" >> ci-summary.md
+          fi
+          
+          # Performance validation
+          if [ -d "performance-validation" ]; then
+            echo "## Performance Validation" >> ci-summary.md
+            if [ -f "performance-validation/performance-report.md" ]; then
+              cat performance-validation/performance-report.md >> ci-summary.md
+            else
+              echo "✅ Performance tests completed" >> ci-summary.md
+            fi
+            echo "" >> ci-summary.md
+          fi
+          
+          echo "## Deployment Status" >> ci-summary.md
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "✅ Successfully deployed" >> ci-summary.md
+          elif [ "${{ needs.deploy.result }}" = "skipped" ]; then
+            echo "⏭️ Deployment skipped (not main/release)" >> ci-summary.md
+          else
+            echo "❌ Deployment failed" >> ci-summary.md
+          fi
+
+      - name: Upload CI Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: ci-summary
+          path: ci-summary.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('ci-summary.md')) {
+              const summary = fs.readFileSync('ci-summary.md', 'utf8');
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            }

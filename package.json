@@ -1,0 +1,73 @@
+{
+  "name": "@superstruct/yaml-cpp.wasm",
+  "version": "0.8.0",
+  "description": "High-performance YAML parsing and emitting for WebAssembly",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/yaml-cpp.mjs",
+      "require": "./dist/yaml-cpp.cjs",
+      "types": "./dist/yaml-cpp.d.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "./build-wasm.sh",
+    "build:simd": "ENABLE_SIMD=ON ./build-wasm.sh",
+    "build:native": "ENABLE_WASM_NATIVE=ON ./build-wasm.sh",
+    "build:full": "ENABLE_SIMD=ON ENABLE_WASM_NATIVE=ON ./build-wasm.sh",
+    "test": "node --test test/**/*.test.mjs",
+    "test:browser": "playwright test",
+    "test:performance": "node test/performance/benchmark.mjs",
+    "test:memory": "node test/performance/memory.test.mjs",
+    "test:compatibility": "node test/compatibility/cross-browser.test.mjs",
+    "benchmark": "node test/performance/benchmark.mjs --detailed",
+    "validate": "npm run build && npm test && npm run test:performance",
+    "clean": "rm -rf build-wasm-* dist/",
+    "act:test": "act -j build-test --matrix enable_simd:false,enable_native:false",
+    "act:full": "act -j build-test"
+  },
+  "keywords": [
+    "yaml",
+    "wasm",
+    "webassembly", 
+    "parser",
+    "emitter",
+    "performance",
+    "browser",
+    "nodejs"
+  ],
+  "author": "Superstruct Ltd",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/superstruct/superstruct.git",
+    "directory": "yaml-cpp.wasm"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "playwright": "^1.40.0"
+  },
+  "browser": {
+    "fs": false,
+    "path": false
+  },
+  "wasm": {
+    "features": ["yaml-parsing", "yaml-emitting", "validation"],
+    "optionalFeatures": ["simd-optimization", "wasm-native-filesystem"],
+    "performance": {
+      "targetNativePerformance": ">90%",
+      "memoryOverhead": "<20%",
+      "startupTime": "<500ms"
+    }
+  }
+}

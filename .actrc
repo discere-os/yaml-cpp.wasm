@@ -1,0 +1,33 @@
+# Act configuration for local GitHub Actions testing
+# yaml-cpp.wasm - System Tier 2
+
+# Use Docker containers that match GitHub Actions
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-20.04=catthehacker/ubuntu:act-20.04
+-P ubuntu-18.04=catthehacker/ubuntu:act-18.04
+
+# Default platform
+--platform ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Environment variables for local testing
+--env EMSDK_VERSION=3.1.50
+--env NODE_VERSION=18
+--env PYTHON_VERSION=3.x
+
+# Secrets for local development (use .secrets if needed)
+# --secret-file .secrets
+
+# Verbose output for debugging
+--verbose
+
+# Bind mount for better caching
+--bind
+
+# Use host networking for better performance
+--use-gitignore
+
+# Container options for better resource allocation
+--container-options="--cpus=4 --memory=8g"
+
+# Default job to run when no specific job is specified
+# act -j build-test

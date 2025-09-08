@@ -1,0 +1,102 @@
+# Production WASM Build Configuration for yaml-cpp.wasm
+# High-performance YAML parsing and emitting for WebAssembly
+#
+# Copyright (c) 2025 Superstruct Ltd, New Zealand
+# Licensed under the same license as the underlying yaml-cpp project (MIT)
+
+cmake_minimum_required(VERSION 3.5...3.30)
+
+# Set up cross-compilation for WASM
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+  set(CMAKE_TOOLCHAIN_FILE "${EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake")
+endif()
+
+project(YAML_CPP_WASM VERSION 0.8.0 LANGUAGES CXX)
+
+# Build configuration
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# WASM-specific configuration
+set(YAML_BUILD_SHARED_LIBS OFF)  # Static linking for WASM
+set(YAML_CPP_BUILD_CONTRIB ON)
+set(YAML_CPP_BUILD_TOOLS OFF)    # Tools not needed in WASM
+set(YAML_CPP_BUILD_TESTS ON)     # Enable for validation
+set(YAML_CPP_INSTALL ON)
+
+# Memory Configuration for YAML processing
+set(MEMORY_FLAGS
+    -s INITIAL_MEMORY=64MB
+    -s MAXIMUM_MEMORY=512MB
+    -s ALLOW_MEMORY_GROWTH=1
+    -s STACK_SIZE=5MB
+)
+
+# Base WASM Configuration
+set(WASM_BUILD_FLAGS
+    -s WASM=1
+    -s MODULARIZE=1
+    -s EXPORT_ES6=1
+    -s USE_ES6_IMPORT_META=0
+    -s ENVIRONMENT=web,webview,worker,node
+)
+
+# Performance Optimization
+set(PERFORMANCE_FLAGS
+    -O3
+    -flto
+    --closure 1
+    -s ASSERTIONS=0
+)
+
+# JavaScript Integration for yaml-cpp API
+set(JS_INTEGRATION_FLAGS
+    -s EXPORTED_RUNTIME_METHODS=["ccall","cwrap","HEAPU8","UTF8ToString","stringToUTF8"]
+    -s EXPORTED_FUNCTIONS=["_malloc","_free"]
+)
+
+# WASM-Native Features (optional advanced capabilities)
+option(ENABLE_WASM_NATIVE "Enable WASM-native features" OFF)
+if(ENABLE_WASM_NATIVE)
+    set(WASM_NATIVE_FLAGS
+        -s ASYNCIFY=1
+        -s FORCE_FILESYSTEM=1
+        -lidbfs.js
+    )
+else()
+    set(WASM_NATIVE_FLAGS "")
+endif()
+
+# Combine all flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MEMORY_FLAGS} ${WASM_BUILD_FLAGS} ${PERFORMANCE_FLAGS} ${JS_INTEGRATION_FLAGS} ${WASM_NATIVE_FLAGS}")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MEMORY_FLAGS} ${WASM_BUILD_FLAGS} ${PERFORMANCE_FLAGS} ${JS_INTEGRATION_FLAGS} ${WASM_NATIVE_FLAGS}")
+
+# Include original CMakeLists.txt with modifications
+include(${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+# Override build targets for WASM
+set_target_properties(yaml-cpp PROPERTIES
+    OUTPUT_NAME "yaml-cpp"
+    SUFFIX ".wasm.js"
+)
+
+# Export additional functions for JavaScript wrapper
+target_link_options(yaml-cpp PRIVATE
+    -s EXPORTED_FUNCTIONS=["_malloc","_free","_yaml_load_from_string","_yaml_dump_to_string"]
+)
+
+# Custom install for WASM distribution
+install(TARGETS yaml-cpp
+    RUNTIME DESTINATION dist/
+    LIBRARY DESTINATION dist/
+    ARCHIVE DESTINATION dist/
+)
+
+# Install WASM files
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/yaml-cpp.wasm.js
+    ${CMAKE_CURRENT_BINARY_DIR}/yaml-cpp.wasm
+    DESTINATION dist/
+    OPTIONAL
+)

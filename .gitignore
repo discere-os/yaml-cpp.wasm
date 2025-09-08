@@ -1,3 +1,40 @@
+# Original yaml-cpp build artifacts
 build/
 /tags
 /bazel-*
+
+# WASM build artifacts  
+build-wasm-*/
+dist/
+
+# Node.js artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing artifacts
+playwright-report/
+test-results/
+.playwright-mcp/
+benchmark-results.json
+coverage/
+
+# Development artifacts  
+*.log
+.env
+.env.local
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Temporary files
+tmp/
+tmp_diffs/
+*.tmp
+*.temp
+
+# Act runner artifacts
+.actrc.local
